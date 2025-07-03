@@ -1,0 +1,987 @@
+---
+title: "¿Cómo inciden las características estructurales de los Estados (PBI, PBI per cápita, IED, apertura comercial, corrupción, tamaño del país y región) en la probabilidad y el tipo de sanciones impuestas por Estados Unidos entre 2001 y 2008?  Fernando Salazar & Steve Grimaldo"
+output: 
+  flexdashboard::flex_dashboard:
+    theme: united
+    source_code: embed
+---
+
+1. Introducción {data-icon="fa-solid fa-lightbulb"}
+===================================== 
+
+Column {data-width=400}
+-----------------------------------------------------------------------
+
+```{r setup, include=FALSE}
+# Cargar paquetes
+library(flexdashboard)
+library(rio)
+library(readxl)
+library(psych)
+library(GPArotation)
+library(nFactors)
+library(tidyverse)
+library(dplyr)
+library(GGally)
+library(cluster)
+library(factoextra)
+library(NbClust)
+library(ggplot2)
+library(scales)
+library(dendextend)
+library(plotly)
+htmltools::tagList(fontawesome::fa_html_dependency())
+
+computeMuestra = function(...) return("Muestra")
+computePais = function(...) return(227)
+computeRegion = function(...) return(8)
+# 1. Importar base de datos
+data = import("Base de datos trabajo final epap2.xlsx")
+
+# 2. Seleccionar solo las variables imputadas para AFE
+variables_imputadas <- data %>%
+  select(PBI_prom_imputado,
+         PBIpc_prom_imputado,
+         IED_prom_imputado,
+         prom_apertura_comercial_imputado,
+         Prom_corrupcion_imputado)
+
+# 3. Estandarizar los datos
+variables_estandarizadas <- scale(variables_imputadas)
+
+# 4. Evaluar adecuación del análisis factorial: prueba KMO y Bartlett
+KMO(variables_estandarizadas)
+cortest.bartlett(variables_estandarizadas)
+
+# 5. Determinar número de factores con análisis paralelo
+fa.parallel(variables_estandarizadas, fa = "fa")
+
+# 6. AFE con 2 factores
+afe_resultado <- fa(variables_estandarizadas, nfactors = 2, rotate = "varimax", fm = "ml")
+print(afe_resultado)
+fa.diagram(afe_resultado)
+
+# 7. Añadir los factores a la base original
+factores <- as.data.frame(afe_resultado$scores)
+data_con_factores <- cbind(data, factores)
+
+# 8. Guardar variables estandarizadas para clustering
+variables_clustering <- variables_estandarizadas
+
+# 9. GAP Statistic
+set.seed(123)
+gap_stat_result <- clusGap(
+  variables_clustering, 
+  FUN = kmeans, 
+  nstart = 25, 
+  K.max = 10, 
+  B = 50
+)
+
+# 10. Preparar base para clustering PAM
+dataClus <- data %>%
+  select(pais,
+         PBI_prom_imputado,
+         PBIpc_prom_imputado,
+         IED_prom_imputado,
+         prom_apertura_comercial_imputado,
+         Prom_corrupcion_imputado)
+
+# 11. Escalar variables
+variables_scaled <- scale(dataClus %>% select(-pais))
+
+# 12. Matriz de distancias
+g.dist <- dist(variables_scaled)
+
+# 13. Clustering PAM (k = 2)
+set.seed(123)
+res.pam <- pam(g.dist, k = 2, cluster.only = FALSE)
+
+# 14. Añadir resultados del cluster a la base
+dataClus$pam_cluster <- res.pam$cluster
+
+```
+
+### Datos de la muestra
+```{r}
+muestra = computeMuestra()
+valueBox(muestra, icon = "fa-solid fa-flask")
+```
+
+### Regiones mundiales
+
+```{r}
+regiones = computeRegion()
+valueBox(regiones, icon = "fa-solid fa-earth-europe", color ="navy")
+```
+
+### Países del Mundo 
+
+```{r}
+países = computePais()
+valueBox(países, icon = "fas fa-earth-americas", color = "darkgreen")
+```
+
+
+### Hipótesis
+* **TÍTULO DEL TRABAJO:**
+ Estados Unidos como hegemón global (2001–2008): Una aproximación estructural al patrón de imposición de sanciones según el tamaño de los Estados
+
+* **Problemática observada:** 
+Los países con menor PBI per cápita, mayores niveles de corrupción y menor tamaño estructural tienen mayor probabilidad de ser sancionados por EE.UU.
+* **Pregunta de investigación:**
+  ¿Cómo inciden las características estructurales de los Estados (PBI, PBI per cápita, IED, apertura comercial, corrupción, tamaño del país y región) en la probabilidad y el tipo de sanciones impuestas por Estados Unidos entre 2001 y 2008?
+ * **Hipótesis 1 (H1):**
+ “Los países con menor PBI per cápita, mayores niveles de corrupción y menor tamaño estructural tienen mayor probabilidad de ser sancionados por EE.UU.”
+ * **Hipótesis 2 (H2):**
+"El tamaño estructural de un país influye en el tipo de sanción que Estados Unidos impone: los países con menor tamaño estructural son más propensos a recibir sanciones económicas, mientras que los de mayor tamaño reciben sanciones militares o múltiples."
+ * **Hipótesis 2 (H2):**
+ "El tamaño estructural de un país también se asocia con la duración total de las  sanciones impuestas: los países más pequeños enfrentan sanciones más prolongadas."
+
+Column {data-width=800}
+-----------------------------------------------------------------------
+### Mapa global de países sancionados por región
+
+```{r, fill=TRUE}
+library(countrycode)
+data$iso3 <- countrycode(data$pais, origin = "country.name", destination = "iso3c")
+
+# Agrupar por región y calcular proporción de países sancionados
+region_heat <- data %>%
+  group_by(region) %>%
+  summarise(proporcion_sancionados = mean(fue_sancionado == "Sí", na.rm = TRUE)) %>%
+  ungroup()
+
+# Unir esta proporción con los países individuales para pintarlos
+data_heat <- data %>%
+  left_join(region_heat, by = "region")
+colorbar_limits <- list(cmin = 0, cmax = 1)
+
+# Escalar a porcentaje
+data_heat$proporcion_pct <- data_heat$proporcion_sancionados * 100
+
+plot_geo(data_heat) %>%
+  add_trace(
+    z = ~proporcion_pct,
+    color = ~proporcion_pct,
+    colors = "YlOrRd",
+    text = ~paste(
+      pais,
+      "<br>Región:", region,
+      "<br><b>", round(proporcion_pct), "% sancionados</b>"
+    ),
+    locations = ~iso3,
+    marker = list(line = list(width = 0.5, color = 'gray')),
+    locationmode = 'ISO-3',
+    type = 'choropleth',
+    zmin = 0,
+    zmax = 100,
+    colorbar = list(title = "Porcentaje sancionados", ticksuffix = "%")
+  ) %>%
+  layout(
+    title = 'Mapa de calor por regiones según proporción de países sancionados',
+    geo = list(showframe = FALSE, projection = list(type = 'natural earth'))
+  )
+```
+
+### Mapa global del promedio PBI de paises por región
+
+```{r, fill=TRUE}
+# Agregar códigos ISO si aún no están
+data$iso3 <- countrycode(data$pais, origin = "country.name", destination = "iso3c")
+
+# EXCLUIR Estados Unidos del análisis
+data_sin_usa <- data %>% filter(pais != "United States")
+
+# 1. Calcular el PBI promedio por región (sin EE.UU.)
+region_pbi <- data_sin_usa %>%
+  group_by(region) %>%
+  summarise(pbi_promedio_region = mean(PBI_prom_imputado, na.rm = TRUE)) %>%
+  ungroup()
+
+# 2. Unir el promedio a cada país (sin EE.UU.)
+data_pbi <- data_sin_usa %>%
+  left_join(region_pbi, by = "region")
+
+# 3. Crear el mapa sin EE.UU.
+plot_geo(data_pbi) %>%
+  add_trace(
+    z = ~pbi_promedio_region,
+    color = ~pbi_promedio_region,
+    colors = "Blues",
+    text = ~paste(
+      "<b>", pais, "</b>",
+      "<br>Región:", region,
+      "<br><b>PBI promedio regional:</b> ", round(pbi_promedio_region, 2)
+    ),
+    locations = ~iso3,
+    marker = list(line = list(width = 0.5, color = 'gray')),
+    locationmode = 'ISO-3',
+    type = 'choropleth',
+    zmin = min(region_pbi$pbi_promedio_region),
+    zmax = max(region_pbi$pbi_promedio_region),
+    colorbar = list(title = "PBI promedio<br>por región")
+  ) %>%
+  layout(
+    title = 'Mapa mundial por PBI promedio regional (sin EE.UU.)',
+    geo = list(showframe = FALSE, projection = list(type = 'natural earth'))
+  )
+```
+
+2. Análisis univariado {data-icon="fa-solid fa-chart-simple"}
+===================================== 
+
+Column {data-width=500}{.tabset}
+-----------------------------------------------------------------------
+
+### Gráfico pie de países sancionados
+
+
+```{r}
+# Tabla resumen
+sancionados_tabla <- data %>%
+  group_by(fue_sancionado) %>%
+  summarise(n = n()) %>%
+  mutate(prop = n / sum(n),
+         etiqueta = paste0(fue_sancionado, ": ", round(prop * 100), "%"))
+
+# Gráfico
+plot_ly(sancionados_tabla, labels = ~etiqueta, values = ~n, type = 'pie',
+        textinfo = 'label+percent',
+        hoverinfo = 'label+value+percent',
+        marker = list(colors = c('#FF6B6B', '#4ECDC4'))) %>%
+  layout(title = 'Proporción de países sancionados por EE.UU.',
+         legend = list(orientation = 'h', x = 0.5, xanchor = 'center'))
+```
+
+### Gráfico pie de países sancionados por región
+
+```{r}
+# Paso 1: Filtrar países sancionados
+sancionados_region <- data%>%
+  filter(fue_sancionado == "Sí") %>%
+  group_by(region) %>%
+  summarise(total = n()) %>%
+  ungroup()
+
+graf_sancion_region <- plot_ly(
+  data = sancionados_region,
+  labels = ~region,
+  values = ~total,
+  type = 'pie',
+  textinfo = 'label+percent',
+  hoverinfo = 'label+percent+value',
+  marker = list(colors = c('#66b3ff', '#ff9999', '#99ff99', '#ffcc99', '#c2c2f0', '#ffb3e6'))
+) %>%
+  plotly::layout(  # aquí forzamos que sea el layout de plotly
+    title = list(
+      text = "Distribución de países sancionados por región",
+      x = 0.5,
+      font = list(size = 20)
+    ),
+    legend = list(
+      orientation = 'h',
+      xanchor = "center",
+      x = 0.5,
+      y = -0.1,
+      font = list(size = 12)
+    ),
+    margin = list(t = 80, b = 100)
+  )
+
+
+# Mostrar gráfico
+graf_sancion_region
+```
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Variables de control
+```{r}
+library(dplyr)
+library(DT)
+library(skimr)
+# Variables de control (ajusta según tus datos)
+v_ctrl <- data %>%
+  select(region, tamano_pais)
+
+# Tabla descriptiva
+skim_vctrl <- skim(v_ctrl)
+
+# Mostrar como tabla interactiva
+datatable(skim_vctrl, options = list(scrollX = TRUE))
+```
+
+### Variables independientes
+
+```{r}
+# Variables independientes (estructurales)
+v_ind <- data %>%
+  select(PBI_prom_imputado,
+         IED_prom_imputado,
+         Prom_corrupcion_imputado,
+         prom_apertura_comercial_imputado,
+         PBIpc_prom_imputado)
+
+# Tabla descriptiva
+skim_vind <- skim(v_ind)
+
+# Mostrar como tabla interactiva
+datatable(skim_vind, options = list(scrollX = TRUE))
+```
+
+3. Pruebas estadísticas {data-icon="fa-solid fa-check"}
+===================================== 
+
+Column {data-width=500}{.tabset}
+-----------------------------------------------------------------------
+
+### Chi cuadrado: si fue sancionado y tamaño de país
+
+
+```{r}
+data$fue_sancionado <- factor(data$fue_sancionado, labels = c("No sancionado", "Sancionado"))
+
+# Tabla de contingencia
+tabla1 <- table(data$fue_sancionado, data$tamano_pais)
+
+# Convertimos a matriz
+tablachi1 <- as.matrix(tabla1)
+
+# Visualización bonita
+library(knitr)
+library(kableExtra)
+
+df_tablachi1 <- as.data.frame.matrix(tablachi1)
+df_tablachi1$Sanción <- rownames(df_tablachi1)
+df_tablachi1 <- df_tablachi1[, c("Sanción", colnames(tablachi1))]
+
+df_tablachi1 %>%
+  kable(caption = "Tabla de Contingencia: Sanción y Tamaño del País") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE, position = "center", font_size = 14) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "Black", background = "#eec1b1")
+resultadochi1 <- chisq.test(tablachi1)
+
+vis_chi1 <- data.frame(
+  Estimación = c("Estadístico Chi-cuadrado", "Grados de libertad", "Valor p"),
+  Valor = c(round(resultadochi1$statistic, 3), resultadochi1$parameter, round(resultadochi1$p.value, 4))
+)
+
+vis_chi1 %>%
+  kable(caption = "Chi-cuadrado: Sanción y Tamaño del País") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE) %>%  
+  row_spec(0, bold = TRUE, color = "Black", background = "#eec1b1")
+
+```
+
+### Chi cuadrado: si fue sancionado y región
+
+```{r}
+tabla2 <- table(data$fue_sancionado, data$region)
+tablachi2 <- as.matrix(tabla2)
+
+df_tablachi2 <- as.data.frame.matrix(tablachi2)
+df_tablachi2$Sanción <- rownames(df_tablachi2)
+df_tablachi2 <- df_tablachi2[, c("Sanción", colnames(tablachi2))]
+
+df_tablachi2 %>%
+  kable(caption = "Tabla de Contingencia: Sanción y Región") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE, position = "center", font_size = 14) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "Black", background = "#eec1b1")
+resultadochi2 <- chisq.test(tablachi2)
+
+vis_chi2 <- data.frame(
+  Estimación = c("Estadístico Chi-cuadrado", "Grados de libertad", "Valor p"),
+  Valor = c(round(resultadochi2$statistic, 3), resultadochi2$parameter, round(resultadochi2$p.value, 4))
+)
+
+vis_chi2 %>%
+  kable(caption = "Chi-cuadrado: Sanción y Región") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE) %>%  
+  row_spec(0, bold = TRUE, color = "Black", background = "#eec1b1")
+```
+
+### Prueba T: PBI promedio y si fue sancionado
+
+```{r}
+# Promedios
+resumen_t <- data %>%
+  group_by(fue_sancionado) %>%
+  summarise(Media = mean(PBIpc_prom_imputado, na.rm = TRUE),
+            Desviación = sd(PBIpc_prom_imputado, na.rm = TRUE),
+            n = n()) %>%
+  rename(Sanción = fue_sancionado)
+
+resumen_t %>%
+  kable(caption = "Promedios de PBIpc según Sanción") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE, position = "center")
+t_test <- t.test(PBIpc_prom_imputado ~ fue_sancionado, data = data)
+
+vis_ttest <- data.frame(
+  Estimación = c("Estadístico t", "Grados de libertad", "Valor p"),
+  Valor = c(round(t_test$statistic, 3), round(t_test$parameter, 2), round(t_test$p.value, 4))
+)
+
+vis_ttest %>%
+  kable(caption = "Prueba t de PBIpc según Sanción") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE) %>%  
+  row_spec(0, bold = TRUE, color = "Black", background = "#eec1b1")
+
+```
+
+### Prueba ANOVA: PBI promedio del imputado y el tamaño del país
+
+```{r}
+# Promedios
+resumen_aov <- data %>%
+  group_by(tamano_pais) %>%
+  summarise(Media = mean(PBIpc_prom_imputado, na.rm = TRUE),
+            Desviación = sd(PBIpc_prom_imputado, na.rm = TRUE),
+            n = n()) %>%
+  rename(`Tamaño del País` = tamano_pais)
+
+resumen_aov %>%
+  kable(caption = "Promedios de PBIpc según Tamaño del País") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE, position = "center")
+aov_model <- aov(PBIpc_prom_imputado ~ tamano_pais, data = data)
+aov_result <- summary(aov_model)
+
+# Extraer valores
+Fvalor <- aov_result[[1]]$`F value`[1]
+pvalor <- aov_result[[1]]$`Pr(>F)`[1]
+gl <- aov_result[[1]]$Df[1]
+
+vis_aov <- data.frame(
+  Estimación = c("Estadístico F", "Grados de libertad", "Valor p"),
+  Valor = c(round(Fvalor, 3), gl, round(pvalor, 4))
+)
+
+vis_aov %>%
+  kable(caption = "ANOVA: PBIpc según Tamaño del País") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE) %>%  
+  row_spec(0, bold = TRUE, color = "Black", background = "#eec1b1")
+```
+
+4. Regresiones {data-icon="fa-solid fa-wave-square"}
+===================================== 
+
+Column {data-width=500}{.tabset}
+-----------------------------------------------------------------------
+
+### Regresión Logística: Variables de control
+
+```{r}
+data_filtrada <- data %>%
+  filter(!is.na(fue_sancionado) &
+         !is.na(tamano_pais) &
+         !is.na(region) &
+         !is.na(PBIpc_prom_imputado))
+
+# Asegurarse que tengan más de un nivel
+if (length(unique(data_filtrada$tamano_pais)) > 1) {
+  data_filtrada$tamano_pais <- factor(data_filtrada$tamano_pais)
+} else {
+  stop("‘tamano_pais’ tiene solo un nivel después de filtrar.")
+}
+
+if (length(unique(data_filtrada$region)) > 1) {
+  data_filtrada$region <- factor(data_filtrada$region)
+} else {
+  stop("‘region’ tiene solo un nivel después de filtrar.")
+}
+```
+
+```{r}
+modelo_log <- glm(fue_sancionado ~ tamano_pais + region,
+                  data = data_filtrada,
+                  family = binomial)
+
+resumen <- summary(modelo_log)$coefficients
+
+# Crear tabla ordenada
+tabla_resultados <- data.frame(
+  Coeficiente = round(resumen[, 1], 4),
+  Error_Estandar = round(resumen[, 2], 4),
+  Valor_z = round(resumen[, 3], 4),
+  p_value = format.pval(resumen[, 4], digits = 4, eps = 1e-5)
+)
+
+tabla_resultados %>%
+  kable(caption = "Regresión Logística: ¿Fue sancionado?",
+        digits = 4) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, background = "#eec1b1")
+
+```
+
+Column {data-width=500}{.tabset}
+-----------------------------------------------------------------------
+
+### Regresión Logística: Variables Independientes
+
+```{r}
+# Modelo de regresión logística
+modelo_logistico_final <- glm(fue_sancionado ~ PBI_prom_imputado +
+                                            IED_prom_imputado +
+                                            Prom_corrupcion_imputado +
+                                            prom_apertura_comercial_imputado +
+                                            PBIpc_prom_imputado,
+                              data = data,
+                              family = binomial)
+
+# Resumen del modelo
+summary_modelo_final <- summary(modelo_logistico_final)
+
+# Extraer coeficientes
+coef_final <- summary_modelo_final$coefficients
+
+# Crear dataframe de resultados
+resultados_final <- data.frame(
+  Coeficiente = coef_final[, 1],
+  Error_Estandar = coef_final[, 2],
+  Valor_z = coef_final[, 3],
+  p_value = format.pval(coef_final[, 4], digits = 4, eps = 1e-5),
+  AIC = round(AIC(modelo_logistico_final), 2)
+)
+
+# Visualización en tabla elegante
+library(kableExtra)
+rownames(resultados_final) <- rownames(coef_final)
+
+resultados_final %>%
+  kable(caption = "Modelo Logístico: ¿Fue Sancionado? y Variables Económicas", digits = 4) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE, background = "#eec1b1")
+```
+
+
+5. Análisis factorial {data-icon="fa-solid fa-layer-group"}
+===================================== 
+
+Column {data-width=500}{.tabset}
+-----------------------------------------------------------------------
+
+### Correlación de las variables
+```{r}
+# Agrupamos por regiony calculamos los promedios
+data_region <- data %>%
+  group_by(region) %>%
+  summarise(
+    PBI_prom_p = mean(PBI_prom_imputado, na.rm = TRUE),
+    IED_prom_p = mean(IED_prom_imputado, na.rm = TRUE),
+    Corrupcion_p = mean(Prom_corrupcion_imputado, na.rm = TRUE),
+    Apertura_p = mean(prom_apertura_comercial_imputado, na.rm = TRUE),
+    PBIpc_p = mean(PBIpc_prom_imputado, na.rm = TRUE)
+  )
+
+# Selección solo de las variables numéricas
+data_cor <- data_region %>%
+  select(-region)
+
+# Nos aseguramos que todo sea numérico
+data_cor[] <- lapply(data_cor, function(x) as.numeric(as.character(x)))
+
+# Eliminamos regiones con valores NA o infinitos
+data_cor_clean <- data_cor[!apply(data_cor, 1, function(x) any(is.na(x) | is.infinite(x))), ]
+# Calculamos la matriz de correlación
+cor_matrix <- cor(data_cor_clean, use = "complete.obs", method = "pearson")
+
+# Mostramos la matriz en una tabla elegante
+library(kableExtra)
+library(corrplot)
+corrplot(cor_matrix, method = "color", addCoef.col = "black",
+         tl.col = "black", number.cex = 0.7,
+         col = colorRampPalette(c("red", "white", "blue"))(200),
+         title = "Matriz de Correlación: Variables Económicas", mar = c(0,0,1,0))
+```
+
+
+Column {data-width=500}{.tabset}
+-----------------------------------------------------------------------
+
+### Resultado KMO
+```{r}
+psych::KMO(cor_matrix)
+```
+
+### Prueba de matriz de identidad y matriz singular.
+
+Prueba de matriz de identidad:
+```{r}
+cortest.bartlett(cor_matrix,n=nrow(data_cor_clean))$p.value>0.05
+```
+
+Prueba de matriz singular:
+
+```{r}
+library(Matrix)
+
+rankMatrix(cor_matrix)
+```
+La matriz es singular
+
+### Resultados del EFA
+```{r, include=FALSE}
+# Seleccionar solo las variables imputadas para AFE
+variables_imputadas <- data %>%
+  select(PBI_prom_imputado,
+         PBIpc_prom_imputado,
+         IED_prom_imputado,
+         prom_apertura_comercial_imputado,
+         Prom_corrupcion_imputado)
+
+
+# Estandarizar los datos
+variables_estandarizadas <- scale(variables_imputadas)
+
+# Evaluar adecuación del análisis factorial: prueba KMO y Bartlett
+KMO(variables_estandarizadas)  # >0.6 es aceptable
+cortest.bartlett(variables_estandarizadas)
+
+# Determinar número de factores con análisis paralelo
+fa.parallel(variables_estandarizadas, fa = "fa")
+
+# AFE con 1 o 2 factores según resultado anterior
+afe_resultado <- fa(variables_estandarizadas, nfactors = 2, rotate = "varimax", fm = "ml")
+
+print(afe_resultado)
+
+# Añadir los factores a la base original
+factores <- as.data.frame(afe_resultado$scores)
+data_con_factores <- cbind(data, factores)
+```
+```{r}
+fa.diagram(afe_resultado,main = "Resultados del EFA")
+```
+
+### Tabla de correlación
+
+```{r}
+cor_matrix <- cor(data_cor_clean, use = "complete.obs", method = "pearson")
+
+# Mostramos la matriz en una tabla elegante
+library(kableExtra)
+
+cor_matrix %>%
+  round(3) %>%
+  kable(caption = "Matriz de Correlación: Variables Económicas por Región") %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  kable_classic()
+```
+
+
+6. Análisis conglomerado {data-icon="fa-solid fa-object-ungroup"}
+===================================== 
+
+Column {data-width=500} {.tabset}
+-----------------------------------------------------------------------
+
+### Modelo codo
+
+```{r}
+# Método de codo (elbow method)
+fviz_nbclust(variables_clustering, kmeans, method = "wss") +
+  labs(title = "Método del Codo para determinar k óptimo")
+```
+
+### Silueta
+
+```{r}
+# Método de silueta
+fviz_nbclust(variables_clustering, kmeans, method = "silhouette") +
+  labs(title = "Análisis de Silueta")
+```
+
+### GAP
+
+```{r}
+# Método gap statistic (más robusto)
+set.seed(123)
+fviz_nbclust(variables_clustering, kmeans, method = "gap_stat", nboot = 50) +
+  labs(title = "Estadístico GAP")
+```
+
+### N°de Clusters
+```{r, include=FALSE}
+set.seed(123)  # Para reproducibilidad
+
+gap_stat_result <- clusGap(
+  variables_estandarizadas, 
+  FUN = kmeans, 
+  nstart = 25, 
+  K.max = 10, 
+  B = 50
+)
+
+summary(gap_stat_result)
+
+```
+```{r}
+fviz_gap_stat(gap_stat_result)
+```
+
+
+Column {data-width=500} {.tabset}
+-----------------------------------------------------------------------
+
+### Orden clusters PAM
+```{r}
+# Seleccionar solo las variables imputadas
+data_vars <- data %>% 
+  select(pais,
+         PBI_prom_imputado,
+         PBIpc_prom_imputado,
+         IED_prom_imputado,
+         prom_apertura_comercial_imputado,
+         Prom_corrupcion_imputado)
+
+# Escalar (normalizar) las variables
+data_scaled <- data_vars %>%
+  select(-pais) %>%
+  scale()
+
+# Calcular matriz de distancias euclidianas
+g.dist <- dist(data_scaled)
+
+```
+
+```{r}
+set.seed(123)
+res.pam <- pam(g.dist, k = 2, cluster.only = FALSE)
+
+summary(res.pam)
+fviz_silhouette(res.pam,print.summary = F)
+```
+
+### Silhouette Clusters
+```{r}
+vars_estructurales <- c("PBI_prom_imputado", 
+                        "PBIpc_prom_imputado", 
+                        "prom_apertura_comercial_imputado", 
+                        "Prom_corrupcion_imputado")
+# Estandarizar
+base_std <- scale(data[, vars_estructurales])
+
+library(FactoMineR)
+
+# Aplicar PCA (analizar solo componentes relevantes)
+res.pca <- PCA(base_std, graph = FALSE)
+
+# Extraer coordenadas de los países en el espacio factorial
+coord <- as.data.frame(res.pca$ind$coord)
+
+
+```
+
+```{r}
+library(cluster)
+set.seed(123)
+
+pam3 <- pam(coord[, 1:2], k = 3)  # Solo las dos primeras dimensiones
+
+fviz_silhouette(pam3)
+```
+
+### Silhouette PAM
+```{r}
+fviz_cluster(pam3, data = coord[, 1:2], geom = "point", ellipse.type = "norm",
+             palette = "jco", main = "PAM con k = 3")
+```
+
+
+7. Conclusiones {data-icon="fa-solid fa-layer-group"}
+===================================== 
+
+Column {data-width=500}{.tabset}
+-----------------------------------------------------------------------
+
+### Hipótesis 1
+
+```{r}
+# Asegúrate de que sea carácter (por si es factor)
+data$fue_sancionado <- as.character(data$fue_sancionado)
+
+# Cambiar valores
+data$fue_sancionado <- case_when(
+  data$fue_sancionado == "No sancionado" ~ "No",
+  data$fue_sancionado == "Sancionado" ~ "Si",
+  TRUE ~ data$fue_sancionado  # Mantener otros valores sin cambios
+)
+
+# Usar factor 1 continuo
+data$tam_estructura <- coord[, 1]
+
+# O clasificar en terciles
+data$tam_estructura_cat <- cut(coord[, 1],
+                                        breaks = quantile(coord[, 1], probs = c(0, 1/3, 2/3, 1)),
+                                        labels = c("Pequeño", "Mediano", "Grande"),
+                                        include.lowest = TRUE)
+
+vars_estructurales <- data[, c("PBI_prom_imputado",
+                               "PBIpc_prom_imputado",
+                               "IED_prom_imputado",
+                               "prom_apertura_comercial_imputado",
+                               "Prom_corrupcion_imputado")]
+
+res_pca <- PCA(vars_estructurales, scale.unit = TRUE, ncp = 5, graph = FALSE)
+data$Factor_1 <- res_pca$ind$coord[,1]  # Extrae coordenadas del primer eje/factor
+
+data$fue_sancionado_bin <- ifelse(data$fue_sancionado == "Si", 1, 0)
+
+# Cargar paquetes necesarios
+library(tidyverse)
+library(nnet)       # para multinomial     # para tidy models
+library(ggeffects)  # para gráficos de efectos marginales
+library(ggplot2)
+
+# Revisión del modelo logístico binario para H1
+modelo_H1 <- glm(fue_sancionado_bin ~ Factor_1 + region, 
+                 data = data, family = binomial(link = "logit"))
+summary(modelo_H1)
+
+# Resumen e interpretación
+summary(modelo_H1)
+exp(coef(modelo_H1)) # odds ratios
+
+# Efecto marginal de Factor_1
+library(margins)
+margins(modelo_H1)
+
+# Gráfico de predicción
+library(ggeffects)
+plot(ggpredict(modelo_H1, terms = "Factor_1"))
+
+```
+
+###  Interpretación Hipótesis 1
+ Hipótesis 1 (H1):
+Los países con menor tamaño estructural tienen mayor probabilidad de ser sancionados por Estados Unidos entre 2001 y 2008.
+Modelo: Regresión logística binaria.
+Variable dependiente: fue_sancionado_bin (1 = sí, 0 = no)
+Variable predictora principal: Factor_1 (primer factor del AFE sobre tamaño estructural).
+Controles: Región.
+Factor_1 tiene un coeficiente positivo y estadísticamente significativo (p < 0.05), lo que implica que a menor valor del factor (es decir, menor tamaño estructural), mayor es la probabilidad de ser sancionado.
+La región “América del Norte” también muestra un coeficiente significativo, lo cual podría estar sesgado por su baja frecuencia.
+
+
+Interpretación:
+Este hallazgo valida la hipótesis de que EE.UU., durante el momento de mayor hegemonía unipolar (2001-2008), prefirió imponer sanciones a Estados con capacidades estructurales limitadas, probablemente porque estos países presentaban menos capacidad de respuesta o menor costo político internacional para Washington. Este comportamiento encaja con una visión realista del poder, en donde los actores hegemónicos seleccionan objetivos en función de su vulnerabilidad relativa.
+
+El primer gráfico muestra la relación entre el Factor_1 —indicador del tamaño estructural de los países— y la probabilidad de ser sancionado por Estados Unidos. La tendencia es clara: a medida que el Factor_1 aumenta, la probabilidad predicha de sanción disminuye de forma pronunciada. En países con bajo Factor_1 (estructuralmente pequeños o más débiles), la probabilidad de sanción se aproxima al 45%. Esta probabilidad se reduce casi a cero para valores altos del factor. Este patrón evidencia una lógica disuasiva en la política exterior estadounidense: mientras más fuerte es la estructura económica y política de un país (mayor PBIpc, menor corrupción, mayor apertura, etc.), menor es la propensión a ser blanco de sanciones. Este resultado valida empíricamente la hipótesis 1, reforzando la idea de que la capacidad estructural protege a los países frente a mecanismos de presión del hegemón.
+
+### Hipótesis 2
+```{r}
+# Crear la variable tipo_sancion
+data$tipo_sancion <- with(data, ifelse(fue_sancionado_bin == 0, 0,
+                                ifelse(n_tipos_sancion == 1 & sanc_comercial == 1, 1,
+                                ifelse(n_tipos_sancion == 1 & (sanc_militar == 1 | sanc_armamento == 1), 2,
+                                ifelse(n_tipos_sancion > 1, 3, NA)))))
+
+# Convertir a factor
+data$tipo_sancion <- factor(data$tipo_sancion, levels = c(0,1,2,3),
+                            labels = c("No Sanción", "Económica", "Militar", "Múltiples"))
+
+# Ajustar el modelo multinomial con region y Factor_1
+modelo_multinom <- multinom(tipo_sancion ~ Factor_1 + region, data = data)
+
+# Ver resumen del modelo
+summary(modelo_multinom)
+
+# Obtener los valores p (pruebas z)
+z <- summary(modelo_multinom)$coefficients / summary(modelo_multinom)$standard.errors
+p_values <- 2 * (1 - pnorm(abs(z)))
+print(p_values)
+
+# (Opcional) Visualizar coeficientes de forma más clara
+exp(coef(modelo_multinom))  # Odds ratios
+
+# Efectos marginales para Factor_1
+efectos <- ggpredict(modelo_multinom, terms = "Factor_1 [all]")
+
+# Graficar
+plot(efectos) +
+  labs(title = "Efecto del tamaño estructural (Factor_1) sobre tipo de sanción",
+       x = "Tamaño estructural (Factor 1)", y = "Probabilidad predicha",
+       color = "Tipo de sanción") +
+  theme_minimal()
+```
+
+###  Interpretación Hipótesis 2
+Hipótesis 2 (H2):
+El tamaño estructural de un país influye en el tipo de sanción que Estados Unidos impone: los países con menor tamaño estructural son más propensos a recibir sanciones económicas, mientras que los de mayor tamaño reciben sanciones militares o múltiples.
+Modelo: Regresión logística multinomial. 
+Variable dependiente: tipo_sancion (Económica, Militar, Múltiples).
+Variable predictora: Factor_1.
+Controles: Región.
+Resultados principales:
+En comparación con sanciones económicas, el Factor_1 presenta coeficientes negativos para las categorías “Militar” y “Múltiples”, lo cual sugiere que los países con mayor tamaño estructural tienden a recibir sanciones más complejas o agresivas.
+La relación entre el tamaño estructural y el tipo de sanción es estadísticamente significativa, especialmente en la distinción entre sanciones económicas y múltiples (p < 0.01).
+
+Interpretación:
+Este patrón complementa a la H1: los países estructuralmente pequeños son más sancionables en general, pero los estructuralmente grandes, cuando son sancionados, lo son de forma más contundente o diversificada (militar + financiera, etc.). Esto sugiere una estrategia adaptativa de EE.UU., que utiliza distintos tipos de coerción en función del perfil de poder del país objetivo.
+
+El segundo conjunto de gráficos muestra cómo varía la probabilidad predicha de cada tipo de sanción —económica, militar, múltiples o ninguna— en función del Factor_1. En países con bajo tamaño estructural, las probabilidades de sanciones militares o múltiples son considerablemente más altas, mientras que en los países estructuralmente grandes esas probabilidades se reducen casi a cero. Simultáneamente, la probabilidad de no recibir sanción alguna aumenta con el tamaño estructural. 
+
+Esto revela una estrategia diferencial en el uso del poder coercitivo: EE.UU. tiende a ejercer sanciones más severas y simultáneas contra países con menor capacidad estructural, lo que podría deberse a que estos presentan menores costos geopolíticos o resistencia. En cambio, frente a países grandes, el hegemón modula su intervención, siendo más selectivo o absteniéndose de sancionar. Estos hallazgos permiten confirmar la hipótesis 2 y subrayan que no solo importa si se sanciona, sino también cómo se sanciona.
+
+### Hipótesis 3
+```{r}
+# Filtrar solo los países sancionados
+data_sancionados <- subset(data, fue_sancionado_bin == 1)
+
+# Asegurarse que no hay NA en duracion_total
+data_sancionados <- data_sancionados[!is.na(data_sancionados$duracion_total), ]
+
+# Modelo lineal: duración total de sanción ~ Factor 1 + región
+modelo_H3 <- lm(duracion_total ~ Factor_1 + region, data = data_sancionados)
+
+# Ver resumen del modelo
+summary(modelo_H3)
+
+# Obtener efectos marginales
+library(margins)
+margins(modelo_H3)
+
+# Gráfico de dispersión con recta de regresión
+library(ggplot2)
+ggplot(data_sancionados, aes(x = Factor_1, y = duracion_total)) +
+  geom_point(color = "#004488", alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "#BB5566") +
+  labs(title = "Duración de la sanción según tamaño estructural (Factor 1)",
+       x = "Tamaño estructural (Factor 1)",
+       y = "Duración total de la sanción (años)") +
+  theme_minimal()
+```
+
+###  Interpretación Hipótesis 3
+Hipótesis 3 (H3):
+El tamaño estructural de un país también se asocia con la duración total de las sanciones impuestas: los países más pequeños enfrentan sanciones más prolongadas.
+Modelo: Regresión lineal simple.
+Variable dependiente: duracion_total.
+Predictor principal: Factor_1.
+Controles: Región.
+Submuestra: Solo países sancionados
+
+
+Resultados:
+El modelo presenta un R² muy bajo (≈ 0.07) y no se encuentra evidencia estadísticamente significativa de que Factor_1 prediga la duración de las sanciones (p > 0.7).
+
+
+Ninguna de las regiones se comporta de manera significativamente distinta respecto a la duración de las sanciones.
+
+
+Esta hipótesis no se valida empíricamente. La duración de las sanciones no parece responder al tamaño estructural del país sancionado. Esto puede explicarse por factores exógenos al poder relativo del país objetivo (como la continuidad del conflicto, la presión internacional, los cambios de gobierno en EE.UU., entre otros), lo que sugiere que la duración es una dimensión más volátil y contingente de la política sancionatoria.
+
+
+El tercer gráfico explora si existe una relación entre el tamaño estructural del país y la duración total de la sanción (en años). A diferencia de las dos hipótesis anteriores, la dispersión de los datos y la pendiente casi nula de la recta de regresión indican que no existe una relación clara o significativa. Países con bajo Factor_1 presentan sanciones tanto cortas como prolongadas, al igual que los países con Factor_1 elevado. La amplia variabilidad en la duración de las sanciones sugiere que este resultado está influenciado por factores contextuales o dinámicos que van más allá del tamaño estructural, como el tipo de régimen, el cumplimiento de condiciones, la evolución de conflictos o alianzas internacionales. Por tanto, no se encuentra evidencia empírica suficiente para validar la hipótesis 3, lo que invita a futuras investigaciones sobre los determinantes específicos de la persistencia de las sanciones.
